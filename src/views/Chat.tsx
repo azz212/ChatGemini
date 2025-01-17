@@ -17,15 +17,19 @@ import { getBase64BlobUrl } from "../helpers/getBase64BlobUrl";
 import { ImageView } from "../components/ImageView";
 import { sendUserConfirm } from "../helpers/sendUserConfirm";
 import { sendUserAlert } from "../helpers/sendUserAlert";
-import { RouterComponentProps } from "../config/router";
-
-const RefreshPlaceholder = "重新生成中...";
-const FallbackIfIdInvalid =
-    "您当前的会话 ID 似乎无效，请检查您的网址，您也可以新建一个会话。";
+import { RouterComponentProps, routerConfig } from "../config/router";
+import { PyodideInterface } from "pyodide";
+import { useTranslation } from "react-i18next";
 
 const Chat = (props: RouterComponentProps) => {
+    const { t } = useTranslation();
+    const viewAttachment = t("views.Chat.view_attachment");
+    const refreshPlaceholder = t("views.Chat.refresh_placeholder");
+    const invalidPlaceholder = t("views.Chat.invalid_placeholder");
+
     const mainSectionRef = props.refs?.mainSectionRef.current ?? null;
     const { site: siteTitle } = globalConfig.title;
+    const { mode, basename } = routerConfig;
 
     const dispatch = useDispatch();
     const sessions = useSelector(
@@ -34,6 +38,7 @@ const Chat = (props: RouterComponentProps) => {
 
     const ai = useSelector((state: ReduxStoreProps) => state.ai.ai);
     const { id } = useParams<{ id: keyof typeof sessions }>();
+
     const [chat, setChat] = useState<SessionHistory[]>([]);
     const [editState, setEditState] = useState<{
         index: number;
@@ -42,15 +47,20 @@ const Chat = (props: RouterComponentProps) => {
     const [attachmentsURL, setAttachmentsURL] = useState<
         Record<number, string>
     >({});
+    const [pythonRuntime, setPythonRuntime] = useState<PyodideInterface | null>(
+        null
+    );
+
+    const handlePythonRuntimeCreated = (pyodide: PyodideInterface) =>
+        setPythonRuntime(pyodide);
 
     const scrollToBottom = useCallback(
-        (force: boolean = false) => {
+        (force: boolean = false) =>
             (ai.busy || force) &&
-                mainSectionRef?.scrollTo({
-                    top: mainSectionRef.scrollHeight,
-                    behavior: "smooth",
-                });
-        },
+            mainSectionRef?.scrollTo({
+                top: mainSectionRef.scrollHeight,
+                behavior: "smooth",
+            }),
         [ai, mainSectionRef]
     );
 
@@ -63,20 +73,19 @@ const Chat = (props: RouterComponentProps) => {
                     ...finalSessions[id].slice(0, index),
                     {
                         role: "model",
-                        parts: RefreshPlaceholder,
+                        parts: refreshPlaceholder,
                         timestamp: Date.now(),
                     },
                 ],
             };
             dispatch(updateAI({ ...ai, busy: true }));
             dispatch(updateSessions(_sessions));
-
             const handler = (message: string, end: boolean) => {
                 if (end) {
                     dispatch(updateAI({ ...ai, busy: false }));
                 }
                 const prevParts =
-                    _sessions[id][index].parts !== RefreshPlaceholder
+                    _sessions[id][index].parts !== refreshPlaceholder
                         ? _sessions[id][index].parts
                         : "";
                 const updatedTimestamp = Date.now();
@@ -114,7 +123,7 @@ const Chat = (props: RouterComponentProps) => {
                 );
             }
         } else if (ai.busy) {
-            sendUserAlert("AI 正忙，请稍后再试", true);
+            sendUserAlert(t("views.Chat.handleRefresh.not_available"), true);
         }
     };
 
@@ -124,10 +133,7 @@ const Chat = (props: RouterComponentProps) => {
         prompt: string
     ) => {
         if (!ai.busy) {
-            setEditState({
-                index,
-                state,
-            });
+            setEditState({ index, state });
         }
         if (
             !ai.busy &&
@@ -140,13 +146,10 @@ const Chat = (props: RouterComponentProps) => {
                 ...sessions,
                 [id]: [
                     ...sessions[id].slice(0, index),
-                    {
-                        ...sessions[id][index],
-                        parts: prompt,
-                    },
+                    { ...sessions[id][index], parts: prompt },
                     {
                         role: "model",
-                        parts: RefreshPlaceholder,
+                        parts: refreshPlaceholder,
                         timestamp: Date.now(),
                     },
                 ],
@@ -154,45 +157,49 @@ const Chat = (props: RouterComponentProps) => {
             setChat(_sessions[id]);
             handleRefresh(index + 1, _sessions);
         } else if (ai.busy) {
-            sendUserAlert("AI 正忙，请稍后再试", true);
+            sendUserAlert(t("views.Chat.handleEdit.not_available"), true);
         }
     };
 
     const handleDelete = (index: number) => {
         if (!ai.busy && id && id in sessions) {
-            sendUserConfirm("这则回应和对应提问都将被移除，要继续吗？", () => {
-                const _sessions = {
-                    ...sessions,
-                    [id]: [
-                        ...sessions[id].slice(0, index - 1),
-                        ...sessions[id].slice(index + 1),
-                    ],
-                };
-                dispatch(updateSessions(_sessions));
-                setChat(_sessions[id]);
+            sendUserConfirm(t("views.Chat.handleDelete.confirm_message"), {
+                title: t("views.Chat.handleDelete.confirm_title"),
+                confirmText: t("views.Chat.handleDelete.confirm_button"),
+                cancelText: t("views.Chat.handleDelete.cancel_button"),
+                onConfirmed: () => {
+                    const _sessions = {
+                        ...sessions,
+                        [id]: [
+                            ...sessions[id].slice(0, index - 1),
+                            ...sessions[id].slice(index + 1),
+                        ],
+                    };
+                    dispatch(updateSessions(_sessions));
+                    setChat(_sessions[id]);
+                },
             });
         } else if (ai.busy) {
-            sendUserAlert("AI 正忙，请稍后再试", true);
+            sendUserAlert(t("views.Chat.handleDelete.not_available"), true);
         }
     };
 
     useEffect(() => {
         if (id && id in sessions) {
             setChat(sessions[id]);
-            let sessionTitle = sessions[id][0].parts;
+            let sessionTitle = sessions[id][0].title ?? sessions[id][0].parts;
             if (sessionTitle.length > 20) {
                 sessionTitle = `${sessionTitle.substring(0, 20)} ...`;
             }
             document.title = `${sessionTitle} | ${siteTitle}`;
         } else {
-            document.title = `会话无效 | ${siteTitle}`;
+            document.title = siteTitle;
             setChat([
-                { role: "model", parts: FallbackIfIdInvalid, timestamp: 0 },
+                { role: "model", parts: invalidPlaceholder, timestamp: 0 },
             ]);
         }
-
         setTimeout(() => scrollToBottom(true), 300);
-    }, [siteTitle, id, sessions, mainSectionRef, scrollToBottom]);
+    }, [t, siteTitle, id, sessions, mainSectionRef, scrollToBottom]);
 
     return (
         <Container className="max-w-[calc(100%)] py-5 pl-3 mb-auto mx-1 md:mx-[4rem] lg:mx-[8rem]">
@@ -222,10 +229,10 @@ const Chat = (props: RouterComponentProps) => {
                                 margin-top: 0;
                                 margin-bottom: 0.2rem;
                                 border-radius: 0.25rem;
-                            " alt="图片附件" />
+                            " alt="" />
                         </a>
                         <span class="text-xs text-gray-400">
-                            点击查看大图
+                            ${viewAttachment}
                         </span>
                     </div>`;
 
@@ -251,7 +258,18 @@ const Chat = (props: RouterComponentProps) => {
                                 !!data.length ? attachmentPostscriptHtml : ""
                             }
                         >
-                            <Markdown typingEffect={typingEffect}>{`${parts}${
+                            <Markdown
+                                typingEffect={typingEffect}
+                                pythonRuntime={pythonRuntime}
+                                onPythonRuntimeCreated={
+                                    handlePythonRuntimeCreated
+                                }
+                                pythonRepoUrl={`${
+                                    mode === "hash"
+                                        ? window.location.pathname
+                                        : basename
+                                }pyodide`}
+                            >{`${parts}${
                                 !!data.length ? attachmentPostscriptHtml : ""
                             }`}</Markdown>
                         </Session>
